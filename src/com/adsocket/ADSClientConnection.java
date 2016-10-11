@@ -1,8 +1,9 @@
 package com.adsocket;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.net.Socket;
-import java.net.SocketException;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -11,10 +12,12 @@ import java.util.function.Predicate;
  */
 public class ADSClientConnection implements Runnable
 {
-    private ADSConnectionHandler handler;
+    private ADSConnectionHandler delegate;
     private Socket socket;
     private ObjectOutputStream out;
     private ObjectInputStream in;
+
+    private int port = -1;
 
     private Predicate<Object> objectIsNewConnectionRequest;
 
@@ -37,17 +40,19 @@ public class ADSClientConnection implements Runnable
         this.objectIsValid = objectIsValid;
     }
 
-    public ADSClientConnection(Socket socket, ADSConnectionHandler hanlder) throws IOException
+    /**
+     * Creates a new instance of ADSClientConnection
+     * @param socket The recently connected client socket.
+     * @param delegate
+     * @throws IOException
+     */
+    public ADSClientConnection(Socket socket, ADSConnectionHandler delegate) throws IOException
     {
-        try
-        {
-            socket.setSoTimeout(0);
-            socket.setKeepAlive(true);
-        }
-        catch (SocketException e) {}
+        socket.setSoTimeout(0);
+        socket.setKeepAlive(true);
 
         this.socket = socket;
-        this.handler = hanlder;
+        this.delegate = delegate;
 
         in = new ObjectInputStream(socket.getInputStream());
     }
@@ -61,36 +66,43 @@ public class ADSClientConnection implements Runnable
             {
                 Object obj = in.readObject();
 
-                if (obj != null)
+                if (obj != null && objectIsValid.test(obj))
                 {
-                    if (objectIsValid.test(obj))
+                    // Handle the case where the object is a new connection request.
+                    if (objectIsNewConnectionRequest.test(obj))
                     {
-                        if (objectIsNewConnectionRequest.test(obj))
-                        {
-                            int port = getPortFromObject.apply(obj);
+                        port = getPortFromObject.apply(obj);
 
-                            out = handler.getAcceptedConnections().get(port);
-                            if (out != null)
-                            {
-                                handler.didAcceptConnection(port, out);
-                            }
-                            else
-                            {
-                                handler.getPendingConnections().put(port, true);
-                            }
+                        // Has ServerConnection received the other node's client
+                        // request? If so, we are done.
+                        if (delegate.hasAcceptedConnection(port))
+                        {
+                            out = delegate.removeAcceptedConnection(port);
+                            delegate.didAcceptConnection(port, out);
                         }
+                        // If not, we need to wait for that connection.
                         else
                         {
-                            handler.didReceiveMessage(obj);
+                            delegate.addPendingConnection(port);
                         }
                     }
+                    // Handle the case where it is a regular message.
                     else
                     {
-                        return;
+                        delegate.didReceiveMessage(obj);
                     }
                 }
             }
-            catch (IOException e) {}
+            catch (IOException e)
+            {
+                // Lost connection
+                if (port > 0)
+                {
+                    delegate.didLostConnection(port);
+                }
+
+                return;
+            }
             catch (ClassNotFoundException e)
             {
                 e.printStackTrace();

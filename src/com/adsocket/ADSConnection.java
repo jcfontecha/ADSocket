@@ -1,7 +1,7 @@
 package com.adsocket;
 
-import java.io.ObjectOutputStream;
 import java.io.IOException;
+import java.io.ObjectOutputStream;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,13 +18,34 @@ public class ADSConnection
     private int port = 1200;
     private ADSConnectionDelegate delegate;
 
+    private ConcurrentHashMap<Integer, ObjectOutputStream> socketConnections;
+
+    /*************** ports Property ***************/
     private List<String> ports;
+
     public List<String> getPorts()
     {
         return ports;
     }
 
-    private ConcurrentHashMap<Integer, ObjectOutputStream> socketConnections;
+    /*************** fileName Property ***************/
+    private String fileName = "ports.txt";
+
+    public String getFileName()
+    {
+        return fileName;
+    }
+
+    /**
+     * File name or path to comma separated desired ports.
+     * @param fileName
+     */
+    public void setFileName(String fileName)
+    {
+        this.fileName = fileName;
+    }
+
+    /*************** Helper properties Property ***************/
 
     public void setSendConfirmation(Consumer<ObjectOutputStream> sendConfirmation)
     {
@@ -46,21 +67,40 @@ public class ADSConnection
         connectionHandler.setObjectIsValid(objectIsValid);
     }
 
-    public ADSConnection(int port, ADSConnectionDelegate delegate)
+    /**
+     * Creates a new instance of ADSConnection
+     * @param port The port in which the new ServerSocket should be opened.
+     * @param delegate Delegate
+     */
+    public ADSConnection(int port, ADSConnectionDelegate delegate) throws IOException
     {
         this.port = port;
         this.delegate = delegate;
 
-        connectionHandler = new ADSConnectionHandler(port, this);
+        // Create the connection handler
+        try
+        {
+            connectionHandler = new ADSConnectionHandler(port, this);
+        }
+        catch (IOException e)
+        {
+            System.out.print("Error while creating the server in port " + port + ".\n" +
+                    "Make sure a server is not already running on that port.\n");
+            throw e;
+        }
     }
 
+    /**
+     * Starts the server and opens the necessary connections. Before calling this,
+     * make sure that you setFileName. (Default is "ports.txt")
+     */
     public void start()
     {
         // Create threads that try to connect to other ports
         socketConnections = new ConcurrentHashMap<>();
         try
         {
-            ports = ADSHelper.getPortsFromFile("ports.txt");
+            ports = ADSHelper.getPortsFromFile(fileName);
             for (String portString : ports)
             {
                 int newPort = Integer.valueOf(portString);
@@ -79,6 +119,12 @@ public class ADSConnection
         connectionHandler.beginAcceptingIncomingConnections();
     }
 
+    /**
+     * Broadcasts a message to all connected nodes.
+     * @param obj The custom object to send
+     * @param portPredicate Filters out which ports the message will be sent to.
+     * @throws Exception
+     */
     public void broadcastMessage(Object obj, Predicate<Integer> portPredicate) throws Exception
     {
         Enumeration<Integer> keys = socketConnections.keys();
@@ -92,11 +138,15 @@ public class ADSConnection
         }
     }
 
+    /**
+     * Sends a custom object to a particular node or port.
+     * @param obj The custom object to send
+     * @param destination The desination's port.
+     * @throws IOException
+     */
     public void sendMessage(Object obj, int destination) throws IOException
     {
-        //Socket socket = socketConnections.get(port);
         ObjectOutputStream out = socketConnections.get(destination);
-        //out.flush();
 
         if (out != null)
             out.writeObject(obj);
@@ -111,5 +161,18 @@ public class ADSConnection
     {
         socketConnections.put(port, out);
         delegate.didConnectNode(port);
+    }
+
+    public void didLoseConnection(int port)
+    {
+        socketConnections.remove(port);
+
+        try
+        {
+            connectionHandler.openNewConnection(port);
+        }
+        catch (IOException ignored) { }
+
+        delegate.didDisconnectNode(port);
     }
 }
